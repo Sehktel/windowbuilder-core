@@ -1,3 +1,4 @@
+
 /**
  * ### Элемент c образующей
  * Виртуальный класс - BuilderElement, у которго есть образующая
@@ -327,6 +328,20 @@ class GeneratrixElement extends BuilderElement {
     }
   }
 
+  get carcass() {
+    return this.skeleton.carcass;
+  }
+
+  set carcass(v) {
+    const {generatrix, path} = this;
+    if(v) {
+      generatrix.strokeWidth = 5;
+      path.clear();
+    }
+    else {
+      generatrix.strokeWidth = 1;
+    }
+  }
 }
 
 EditorInvisible.GeneratrixElement = GeneratrixElement;

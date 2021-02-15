@@ -1,3 +1,4 @@
+
 /**
  * ### Модуль объекта документа Расчет-заказ
  * Обрботчики событий after_create, after_load, before_save, after_save, value_change
@@ -102,11 +103,26 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
   // подписки на события
 
   // после создания надо заполнить реквизиты по умолчанию: контрагент, организация, договор
-  after_create() {
+  after_create(user) {
 
-    const {enm, cat, current_user, DocCalc_order} = $p;
+    const {enm, cat, job_prm, DocCalc_order} = $p;
+    let current_user;
+    if(job_prm.is_node) {
+      if(user) {
+        current_user = user;
+      }
+      else {
+        return Promise.resolve(this);
+      }
+    }
+    else {
+      current_user = this.manager;
+    }
 
-    if(!current_user) {
+    if(!current_user || current_user.empty()) {
+      current_user = $p.current_user;
+    }
+    if(!current_user || current_user.empty()) {
       return Promise.resolve(this);
     }
 
@@ -124,6 +140,12 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
     //Контрагент
     acl_objs.find_rows({by_default: true, type: cat.partners.class_name}, (row) => {
       this.partner = row.acl_obj;
+      return false;
+    });
+
+    //Склад
+    acl_objs.find_rows({by_default: true, type: cat.stores.class_name}, (row) => {
+      this.warehouse = row.acl_obj;
       return false;
     });
 
@@ -151,11 +173,12 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
 
     //Для шаблонов, отклоненных и отозванных проверки выполнять не будем, чтобы возвращалось всегда true
     //при этом, просто сразу вернуть true не можем, т.к. надо часть кода выполнить - например, сумму документа пересчитать
-    const must_be_saved = [Подтвержден, Отправлен].indexOf(this.obj_delivery_state) == -1;
+    const {obj_delivery_state, _obj, category, rounding} = this;
+    const must_be_saved = ![Подтвержден, Отправлен].includes(obj_delivery_state);
 
     // если установлен признак проведения, проверим состояние транспорта
     if(this.posted) {
-      if(this.obj_delivery_state == Отклонен || this.obj_delivery_state == Отозван || this.obj_delivery_state == Шаблон) {
+      if([Отклонен, Отозван, Шаблон].includes(obj_delivery_state)) {
         msg.show_msg && msg.show_msg({
           type: 'alert-warning',
           text: 'Нельзя провести заказ со статусом<br/>"Отклонён", "Отозван" или "Шаблон"',
@@ -163,16 +186,16 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
         });
         return false;
       }
-      else if(this.obj_delivery_state != Подтвержден) {
+      else if(obj_delivery_state != Подтвержден) {
         this.obj_delivery_state = Подтвержден;
       }
     }
-    else if(this.obj_delivery_state == Подтвержден) {
+    else if(obj_delivery_state == Подтвержден) {
       this.obj_delivery_state = Отправлен;
     }
 
     // проверим заполненность подразделения
-    if(this.obj_delivery_state == Шаблон) {
+    if(obj_delivery_state == Шаблон) {
       this.department = blank.guid;
       this.partner = blank.guid;
     }
@@ -192,6 +215,21 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
           title: this.presentation
         });
         return false || must_be_saved;
+      }
+
+      const err_prices = this.check_prices();
+      if(err_prices) {
+        msg.show_msg && msg.show_msg({
+          type: 'alert-warning',
+          title: 'Ошибки в заказе',
+          text: `Пустая цена ${err_prices.nom.toString()}<br/>Рекомендуется перезапустить браузер и повторить расчет`,
+        });
+        if (!must_be_saved) {
+          if(obj_delivery_state == Отправлен) {
+            this.obj_delivery_state = 'Черновик';
+          }
+          return false;
+        }
       }
     }
 
@@ -218,8 +256,7 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
         }
       });
     });
-    const {rounding} = this;
-    const {_obj, obj_delivery_state, category} = this;
+
     this.doc_amount = doc_amount.round(rounding);
     this.amount_internal = internal.round(rounding);
     this.amount_operation = pricing.from_currency_to_currency(doc_amount, this.date, this.doc_currency).round(rounding);
@@ -257,6 +294,13 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
     // фильтр по статусу
     if(obj_delivery_state == 'Шаблон') {
       _obj.state = 'template';
+      // Шаблоны имеют дополнительное свойство, в котором можно задать доступные системы
+      const permitted_sys = $p.cch.properties.predefined('permitted_sys');
+      if(permitted_sys) {
+        if(!this.extra_fields.find({property: permitted_sys})) {
+          this.extra_fields.add({property: permitted_sys});
+        }
+      }
     }
     else if(category == 'service') {
       _obj.state = 'service';
@@ -309,6 +353,22 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
       })
       .then(() => this);
 
+  }
+
+  // проверяет заполненность цен
+  check_prices() {
+    const {job_prm, pricing} = $p;
+    if(job_prm.pricing.skip_empty_in_spec) {
+      return ;
+    }
+    let err;
+    this.production.forEach((calc_order_row) => {
+      err = pricing.check_prices({calc_order_row});
+      if(err) {
+        return false;
+      }
+    });
+    return err;
   }
 
   // при изменении реквизита
@@ -462,10 +522,10 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
 
   /**
    * рассчитывает итоги диспетчеризации
-   * @return {Promise.<TResult>|*}
+   * @return {Promise}
    */
   dispatching_totals() {
-    var options = {
+    const options = {
       reduce: true,
       limit: 10000,
       group: true,
@@ -600,7 +660,7 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
       СуммаДокументаБезСкидки: this.production._obj.reduce((val, row) => val + row.quantity * row.price, 0).toFixed(2),
       СуммаСкидки: this.production._obj.reduce((val, row) => val + row.discount, 0).toFixed(2),
       СуммаНДС: this.production._obj.reduce((val, row) => val + row.vat_amount, 0).toFixed(2),
-      ТекстНДС: this.vat_consider ? (this.vat_included ? 'В том числе НДС 18%' : 'НДС 18% (сверху)') : 'Без НДС',
+      ТекстНДС: this.vat_consider ? (this.vat_included ? 'В том числе НДС 20%' : 'НДС 20% (сверху)') : 'Без НДС',
       ТелефонПоАдресуДоставки: this.phone,
       СуммаВключаетНДС: contract.vat_included,
       УчитыватьНДС: contract.vat_consider,
@@ -639,7 +699,7 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
       }
     }
 
-    return this.load_production().then(() => {
+    return this.load_linked_refs().then(() => {
 
       // получаем эскизы продукций, параллельно накапливаем количество и площадь изделий
       let editor, imgs = Promise.resolve();
@@ -686,23 +746,14 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
         editor && editor.unload();
         return (get_imgs.length ? Promise.all(get_imgs) : Promise.resolve([]))
           .then(() => {
-            // https://www.npmjs.com/package/qrcodejs
-            // /dist/qrcodejs/qrcode.min.js
-            if(typeof QRCode === 'function') {
-              const svg = document.createElement('SVG');
-              svg.innerHTML = '<g />';
-              const qrcode = new QRCode(svg, {
-                text: 'http://www.oknosoft.ru/zd/',
-                width: 100,
-                height: 100,
-                colorDark: '#000000',
-                colorLight: '#ffffff',
-                correctLevel: QRCode.CorrectLevel.H,
-                useSVG: true
+            // https://github.com/soldair/node-qrcode
+            if(typeof QRCode === 'object') {
+              const text = `ST00012|Name=${res.Организация}|PersonalAcc=${res.ОрганизацияБанкНомерСчета}|BIC=${res.ОрганизацияБанкБИК}|PayeeINN=${res.ОрганизацияИНН}|Purpose=Заказ №${res.ЗаказНомер} от ${res.ДатаЗаказаФорматD} ${res.ТекстНДС}|KPP=${res.ОрганизацияКПП}|Sum=${res.СуммаДокумента}${res.АдресДоставки ? `|payerAddress=${res.АдресДоставки}` : ''}`;
+              return QRCode.toString(text, {type: 'svg'}).then((qr) => {
+                res.qrcode = qr;
+                return res;
               });
-              res.qrcode = svg.innerHTML;
             }
-
             return res;
           });
       });
@@ -874,7 +925,7 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
 
   /**
    * Загружает в RAM данные характеристик продукций заказа
-   * @return {Promise.<TResult>|*}
+   * @return {Promise}
    */
   load_production(forse) {
     const prod = [];
@@ -884,8 +935,7 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
         prod.push(characteristic.ref);
       }
     });
-    return characteristics.adapter.load_array(characteristics, prod, false,
-        this.obj_delivery_state == obj_delivery_states.Шаблон && characteristics.adapter.local.templates)
+    return characteristics.adapter.load_array(characteristics, prod, false)
       .then(() => {
         prod.length = 0;
         this.production.forEach(({nom, characteristic}) => {
@@ -938,7 +988,7 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
    * @param params
    * @param create
    * @param grid
-   * @return {Promise.<TResult>}
+   * @return {Promise}
    */
   create_product_row({row_spec, elm, len_angl, params, create, grid}) {
 
@@ -991,21 +1041,11 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
           if(params) {
 
             // получаем набор параметров, используемых текущей вставкой
-            const used_params = new Set();
-            row_spec.inset.used_params.forEach((param) => {
-              !param.is_calculated && used_params.add(param);
-            });
-            row_spec.inset.specification.forEach(({nom}) => {
-              if(nom instanceof $p.CatInserts){
-                nom.used_params.forEach((param) => {
-                  !param.is_calculated && used_params.add(param);
-                });
-              }
-            });
+            const used_params = row_spec.inset.used_params();
 
             // добавляем параметр в характеристику, если используется в текущей вставке
             params.find_rows({elm: row_spec.row}, (prow) => {
-              if(used_params.has(prow.param)) {
+              if(used_params.includes(prow.param)) {
                 ox.params.add(prow, true).inset = row_spec.inset;
               }
             });
@@ -1080,6 +1120,8 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
         const elm = new FakeElm(row_dp);
         // создаём или получаем строку заказа с уникальной харктеристикой
         res = res
+          .then(() => row_dp.inset.check_prm_restrictions({elm, len_angl,
+            params: dp.product_params.find_rows({elm: row_dp.elm}).map(({_row}) => _row)}))
           .then(() => this.create_product_row({row_spec: row_dp, elm, len_angl, params: dp.product_params, create: true}))
           .then((row_prod) => {
             // рассчитываем спецификацию
@@ -1122,9 +1164,12 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
     const project = editor.create_scheme();
     let tmp = Promise.resolve();
 
+    // если передали ссылку dp, меняем при пересчете свойства в соответствии с полями обработки
+    const {dp} = attr;
+
     // получаем массив продукций в озу
-    return this.load_production()
-      .then((prod) => {
+    return this.load_linked_refs()
+      .then(() => {
         // бежим по табчасти, если продукция, пересчитываем в рисовалке, если материал или paramrtric - пересчитываем строку
         this.production.forEach((row) => {
           const {characteristic: cx} = row;
@@ -1137,7 +1182,7 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
             tmp = tmp.then(() => {
               return project.load(cx, true).then(() => {
                 // выполняем пересчет
-                project.save_coordinates({svg: false});
+                cx.apply_props(project, dp).save_coordinates({svg: false});
                 this.characteristic_saved(project);
               });
             });
@@ -1146,13 +1191,14 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
             return;
           }
           else {
-            if(!cx.origin.empty() && !cx.origin.slave) {
+            const {origin} = cx;
+            if(origin && !origin.empty() && !origin.slave) {
               // это paramrtric
               cx.specification.clear();
               // выполняем пересчет
-              cx.origin.calculate_spec({
+              cx.apply_props(origin, dp).calculate_spec({
                 elm: new FakeElm(row),
-                len_angl: new FakeLenAngl({len: row.len, inset: cx.origin}),
+                len_angl: new FakeLenAngl({len: row.len, inset: origin}),
                 ox: cx
               });
               row.value_change('quantity', '', row.quantity);
@@ -1209,6 +1255,38 @@ $p.DocCalc_order = class DocCalc_order extends $p.DocCalc_order {
   }
 
   /**
+   * Загружает продукции шаблона из mdm-cache
+   * @return {Promise}
+   */
+  load_templates() {
+    if(this._data._templates_loaded) {
+      return Promise.resolve();
+    }
+    else if(this.obj_delivery_state == 'Шаблон') {
+      const {adapters: {pouch}, cat} = $p;
+      return pouch.fetch(`/couchdb/mdm/${pouch.props.zone}/templates/${this.ref}`)
+        .then((res) => res.json())
+        .then(({rows}) => {
+          if(rows) {
+            cat.characteristics.load_array(rows);
+            this._data._templates_loaded = true;
+            return this;
+          }
+          throw null;
+        })
+        .catch((err) => {
+          err && console.log(err);
+          return this.load_production()
+            .then(() => {
+              this._data._templates_loaded = true;
+              return this;
+            })
+        });
+    }
+    return this.load_production();
+  }
+
+  /**
    * Устанавливает подразделение по умолчанию
    */
   static set_department() {
@@ -1242,7 +1320,8 @@ $p.DocCalc_orderProductionRow = class DocCalc_orderProductionRow extends $p.DocC
     let {_obj, _owner, nom, characteristic, unit} = this;
     let recalc;
     const {rounding, _slave_recalc} = _owner._owner;
-    const rfield = $p.DocCalc_orderProductionRow.rfields[field];
+    const {DocCalc_orderProductionRow, DocPurchase_order, utils, wsql, pricing, enm, current_user} = $p;
+    const rfield = DocCalc_orderProductionRow.rfields[field];
 
     if(rfield) {
 
@@ -1257,7 +1336,7 @@ $p.DocCalc_orderProductionRow = class DocCalc_orderProductionRow extends $p.DocC
           characteristic.owner = nom;
         }
         else if(characteristic.owner != nom) {
-          _obj.characteristic = $p.utils.blank.guid;
+          _obj.characteristic = utils.blank.guid;
           characteristic = this.characteristic;
         }
       }
@@ -1286,21 +1365,21 @@ $p.DocCalc_orderProductionRow = class DocCalc_orderProductionRow extends $p.DocC
         spec: characteristic.specification
       };
       const {price} = _obj;
-      $p.pricing.price_type(fake_prm);
-      if(origin instanceof $p.DocPurchase_order) {
+      pricing.price_type(fake_prm);
+      if(origin instanceof DocPurchase_order) {
         fake_prm.first_cost = _obj.first_cost;
       }
       else {
-        $p.pricing.calc_first_cost(fake_prm);
+        pricing.calc_first_cost(fake_prm);
       }
-      $p.pricing.calc_amount(fake_prm);
+      pricing.calc_amount(fake_prm);
       if(price && !_obj.price) {
         _obj.price = price;
         recalc = true;
       }
     }
 
-    if($p.DocCalc_orderProductionRow.pfields.includes(field) || recalc) {
+    if(DocCalc_orderProductionRow.pfields.includes(field) || recalc) {
 
       if(!recalc) {
         _obj[field] = parseFloat(value);
@@ -1316,11 +1395,11 @@ $p.DocCalc_orderProductionRow = class DocCalc_orderProductionRow extends $p.DocC
       // если есть внешняя цена дилера, получим текущую дилерскую наценку
       if(!no_extra_charge) {
         const prm = {calc_order_row: this};
-        let extra_charge = $p.wsql.get_user_param('surcharge_internal', 'number');
+        let extra_charge = wsql.get_user_param('surcharge_internal', 'number');
 
         // если пересчет выполняется менеджером, используем наценку по умолчанию
-        if(!$p.current_user.partners_uids.length || !extra_charge) {
-          $p.pricing.price_type(prm);
+        if(!current_user || !current_user.partners_uids.length || !extra_charge) {
+          pricing.price_type(prm);
           extra_charge = prm.price_type.extra_charge_external;
         }
 
@@ -1334,7 +1413,7 @@ $p.DocCalc_orderProductionRow = class DocCalc_orderProductionRow extends $p.DocC
       // ставка и сумма НДС
       const doc = _owner._owner;
       if(doc.vat_consider) {
-        const {НДС18, НДС18_118, НДС10, НДС10_110, НДС20, НДС20_120, НДС0, БезНДС} = $p.enm.vat_rates;
+        const {НДС18, НДС18_118, НДС10, НДС10_110, НДС20, НДС20_120, НДС0, БезНДС} = enm.vat_rates;
         _obj.vat_rate = (nom.vat_rate.empty() ? НДС18 : nom.vat_rate).ref;
         switch (this.vat_rate) {
         case НДС18:
@@ -1365,12 +1444,6 @@ $p.DocCalc_orderProductionRow = class DocCalc_orderProductionRow extends $p.DocC
         _obj.vat_amount = 0;
       }
 
-      const amount = _owner.aggregate([], ['amount', 'amount_internal']);
-      amount.doc_amount = amount.amount.round(rounding);
-      amount.amount_internal = amount.amount_internal.round(rounding);
-      delete amount.amount;
-      Object.assign(doc, amount);
-      doc._manager.emit_async('update', doc, amount);
 
       // пересчитываем спецификации и цены в следящих вставках
       if(!_slave_recalc){
@@ -1393,6 +1466,12 @@ $p.DocCalc_orderProductionRow = class DocCalc_orderProductionRow extends $p.DocC
           row.value_change('quantity', type, _obj.quantity, no_extra_charge);
         });
       }
+      const amount = _owner.aggregate([], ['amount', 'amount_internal']);
+      amount.doc_amount = amount.amount.round(rounding);
+      amount.amount_internal = amount.amount_internal.round(rounding);
+      delete amount.amount;
+      Object.assign(doc, amount);
+      doc._manager.emit_async('update', doc, amount);
 
       return false;
     }

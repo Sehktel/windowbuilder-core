@@ -1,3 +1,4 @@
+
 /* eslint-disable no-multiple-empty-lines,space-infix-ops */
 /**
  * Аналог УПзП-шного __ФормированиеСпецификацийСервер__
@@ -67,8 +68,20 @@ class SpecBuilding {
         cnstr: 0,
         origin: inset,
       };
+
       // рассчитаем спецификацию вставки
-      inset.calculate_spec({elm, len_angl, ox, spec});
+      if($p.enm.elm_types.stvs.includes(elm_type)) {
+        for(const {contours} of scheme.contours) {
+          for(const contour of contours) {
+            elm.layer = contour;
+            len_angl.cnstr = contour.cnstr;
+            inset.calculate_spec({elm, len_angl, ox, spec});
+          }
+        }
+      }
+      else {
+        inset.calculate_spec({elm, len_angl, ox, spec});
+      }
 
     });
 

@@ -18,7 +18,7 @@ exports.CchPropertiesManager = class CchPropertiesManager extends Object {
    */
   check_mandatory(prms, title) {
 
-    var t, row;
+    let t, row;
 
     // проверяем заполненность полей
     for (t in prms) {
@@ -45,9 +45,11 @@ exports.CchPropertiesManager = class CchPropertiesManager extends Object {
    */
   slist(prop, ret_mgr) {
 
-    var res = [], rt, at, pmgr, op = this.get(prop);
+    let res = [], rt, at, pmgr, op = this.get(prop);
 
     if(op && op.type.is_ref) {
+      const tso = $p.enm.open_directions;
+
       // параметры получаем из локального кеша
       for (rt in op.type.types)
         if(op.type.types[rt].indexOf('.') > -1) {
@@ -59,8 +61,8 @@ exports.CchPropertiesManager = class CchPropertiesManager extends Object {
               ret_mgr.mgr = pmgr;
             }
 
-            if(pmgr.class_name == 'enm.open_directions') {
-              pmgr.get_option_list().forEach((v) => v.value && v.value != $p.enm.tso.folding && res.push(v));
+            if(pmgr === tso) {
+              pmgr.get_option_list().forEach((v) => v.value && v.value != tso.folding && res.push(v));
             }
             else if(pmgr.class_name.indexOf('enm.') != -1 || !pmgr.metadata().has_owners) {
               res = pmgr.get_option_list();
@@ -117,7 +119,7 @@ exports.CchProperties = class CchProperties extends Object {
   /**
    * ### Проверяет условие в строке отбора
    */
-  check_condition({row_spec, prm_row, elm, cnstr, origin, ox, calc_order}) {
+  check_condition({row_spec, prm_row, elm, elm2, cnstr, origin, ox, calc_order}) {
 
     const {is_calculated} = this;
     const {utils, enm: {comparison_types}} = $p;
@@ -127,6 +129,7 @@ exports.CchProperties = class CchProperties extends Object {
       row: row_spec,
       cnstr: cnstr || 0,
       elm,
+      elm2,
       ox,
       calc_order
     }) : this.extract_value(prm_row);
@@ -204,19 +207,40 @@ exports.CchProperties = class CchProperties extends Object {
    */
   extract_value({comparison_type, txt_row, value}) {
 
+    const {enm: {comparison_types}, md, cat} = $p;
+
     switch (comparison_type) {
 
-    case $p.enm.comparison_types.in:
-    case $p.enm.comparison_types.nin:
+    case comparison_types.in:
+    case comparison_types.nin:
 
       if(!txt_row) {
         return value;
       }
       try {
         const arr = JSON.parse(txt_row);
-        const {types} = this.type;
-        if(types && types.length == 1) {
-          const mgr = $p.md.mgr_by_class_name(types[0]);
+        const {types, is_ref} = this.type;
+        if(types && is_ref && arr.length) {
+          let mgr;
+          for(const type of types) {
+            const tmp = md.mgr_by_class_name(types[0]);
+            if(tmp && tmp.by_ref[arr[0]]) {
+              mgr = tmp;
+            }
+          }
+          if(!mgr) {
+            return arr;
+          }
+          else if(mgr === cat.color_price_groups) {
+            const res = [];
+            for(const ref of arr) {
+              const cg = mgr.get(ref, false);
+              if(cg) {
+                res.push(...cg.clrs());
+              }
+            }
+            return res;
+          }
           return arr.map((ref) => mgr.get(ref, false));
         }
         return arr;
@@ -280,13 +304,17 @@ exports.CchProperties = class CchProperties extends Object {
 
   /**
    * Проверяет и при необходимости перезаполняет или устанваливает умолчание value в prow
+   * @param links {Array}
+   * @param prow {Object}
+   * @param values {Array} - Выходной параметр, если передать его снаружы, будет наполнен доступными значениями
+   * @return {boolean}
    */
   linked_values(links, prow, values = []) {
     let changed;
     // собираем все доступные значения в одном массиве
-    links.forEach((link) => link.values.forEach((row) => values.push(row)));
+    links.forEach((link) => link.append_values(values));
     // если значение доступно в списке - спокойно уходим
-    if(values.some((row) => row._obj.value == prow.value)) {
+    if(values.some(({_obj}) => _obj.value == prow.value)) {
       return;
     }
     // если есть явный default - устанавливаем
@@ -329,9 +357,9 @@ exports.CchProperties = class CchProperties extends Object {
         filter.ref = {in: []};
       }
       if(filter.ref.in) {
-        link.values._obj.forEach((row) => {
-          if(filter.ref.in.indexOf(row.value) == -1) {
-            filter.ref.in.push(row.value);
+        link.append_values([]).forEach(({_obj}) => {
+          if(!filter.ref.in.includes(_obj.value)) {
+            filter.ref.in.push(_obj.value);
           }
         });
       }

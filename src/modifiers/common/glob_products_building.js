@@ -1,3 +1,4 @@
+
 /**
  * Аналог УПзП-шного __ПостроительИзделийСервер__
  *
@@ -77,7 +78,7 @@ class ProductsBuilding {
      * @param elm {BuilderElement}
      * @param len_angl {Object}
      */
-    function cnn_add_spec(cnn, elm, len_angl, cnn_other) {
+    function cnn_add_spec(cnn, elm, len_angl, cnn_other, elm2) {
       if(!cnn) {
         return;
       }
@@ -85,7 +86,7 @@ class ProductsBuilding {
       const sign = cnn.cnn_type == enm.cnn_types.ii ? -1 : 1;
       const {new_spec_row, calc_count_area_mass} = ProductsBuilding;
 
-      cnn_filter_spec(cnn, elm, len_angl).forEach((row_cnn_spec) => {
+      cnn.filtered_spec({elm, elm2, len_angl, ox}).forEach((row_cnn_spec) => {
 
         const {nom} = row_cnn_spec;
 
@@ -159,66 +160,6 @@ class ProductsBuilding {
       });
     }
 
-    /**
-     * ПолучитьСпецификациюСоединенияСФильтром
-     * @param cnn
-     * @param elm
-     * @param len_angl
-     */
-    function cnn_filter_spec(cnn, elm, len_angl) {
-
-      const res = [];
-      const {angle_hor} = elm;
-      const {job_prm: {nom: {art1, art2}}, enm} = $p;
-      const {САртикулом1, САртикулом2} = enm.specification_installation_methods;
-      const {check_params} = ProductsBuilding;
-
-      const {cnn_type, specification, selection_params} = cnn;
-      const {ii, xx, acn, t} = enm.cnn_types;
-
-      specification.forEach((row) => {
-        const {nom} = row;
-        if(!nom || nom.empty() || nom == art1 || nom == art2) {
-          return;
-        }
-
-        // только для прямых или только для кривых профилей
-        if((row.for_direct_profile_only > 0 && !elm.is_linear()) ||
-          (row.for_direct_profile_only < 0 && elm.is_linear())) {
-          return;
-        }
-
-        //TODO: реализовать фильтрацию
-        if(cnn_type == ii) {
-          if(row.amin > angle_hor || row.amax < angle_hor || row.sz_min > len_angl.len || row.sz_max < len_angl.len) {
-            return;
-          }
-        }
-        else {
-          if(row.amin > len_angl.angle || row.amax < len_angl.angle) {
-            return;
-          }
-        }
-
-        // "устанавливать с" проверяем только для соединений профиля
-        if((row.set_specification == САртикулом1 && len_angl.art2) || (row.set_specification == САртикулом2 && len_angl.art1)) {
-          return;
-        }
-        // для угловых, разрешаем art2 только явно для art2
-        if(len_angl.art2 && acn.a.indexOf(cnn_type) != -1 && row.set_specification != САртикулом2 && cnn_type != xx && cnn_type != t) {
-          return;
-        }
-
-        // проверяем параметры изделия и добавляем, если проходит по ограничениям
-        if(check_params({params: selection_params, row_spec: row, elm, ox})) {
-          res.push(row);
-        }
-
-      });
-
-      return res;
-    }
-
 
     /**
      * Спецификации фурнитуры
@@ -226,8 +167,9 @@ class ProductsBuilding {
      */
     function furn_spec(contour) {
 
-      // у рамных контуров фурнитуры не бывает
-      if(!contour.parent) {
+      const {ContourNested} = EditorInvisible;
+      // у рамных контуров и вложенных изделий, фурнитуры не бывает
+      if(!contour.parent || contour instanceof ContourNested || contour.parent instanceof ContourNested) {
         return false;
       }
 
@@ -254,8 +196,14 @@ class ProductsBuilding {
           row_spec.elm = row.handle_height_min;
           row_spec.len = row.coefficient / 1000;
           row_spec.qty = 0;
-          row_spec.totqty = 1;
-          row_spec.totqty1 = 1;
+          if(row.quantity && row.nom.demand.count()) {
+            row_spec.totqty = row.quantity;
+            row_spec.totqty1 = row.quantity;
+          }
+          else {
+            row_spec.totqty = 1;
+            row_spec.totqty1 = 1;
+          }
         }
         else {
           row_spec.qty = row.quantity * (!row.coefficient ? 1 : row.coefficient);
@@ -264,30 +212,18 @@ class ProductsBuilding {
       });
 
       // если задано ограничение по массе - проверяем
-      if(furn.furn_set.flap_weight_max) {
-        const map = new Map();
-        let weight = 0;
-        spec.forEach((row) => {
-          // отбрасываем лишние строки
-          if(row.elm > 0) {
-            if(!map.get(row.elm)) {
-              const crow = ox.coordinates.find({elm: row.elm});
-              map.set(row.elm, crow ? crow.cnstr : Infinity);
-            }
-            if(map.get(row.elm) !== cnstr) return;
-          }
-          else if(row.elm !== -cnstr) {
-            return;
-          }
-          weight += row.nom.density * row.totqty;
+      if(furn.furn_set.flap_weight_max && ox.elm_weight(-cnstr) > furn.furn_set.flap_weight_max) {
+        // Визуализируем все стороны
+        const row_base = {clr: blank_clr, nom: $p.job_prm.nom.flap_weight_max};
+        contour.profiles.forEach(elm => {
+          new_spec_row({elm, row_base, origin: furn, spec, ox});
         });
-        if(weight > furn.furn_set.flap_weight_max) {
-          // Визуализируем все стороны
-          const row_base = {clr: blank_clr, nom: $p.job_prm.nom.flap_weight_max};
-          contour.profiles.forEach(elm => {
-            new_spec_row({elm, row_base, origin: furn, spec, ox});
-          });
-        }
+      }
+
+      // ограничения размеров по графикам
+      const checks = ox.sys.graph_restrictions(new paper.Point(contour.bounds.width, contour.bounds.height).divide(10), contour.is_clr());
+      if(Object.keys(checks)) {
+        console.table(checks);
       }
     }
 
@@ -302,11 +238,12 @@ class ProductsBuilding {
       let ok = true;
       const {new_spec_row} = ProductsBuilding;
       const {side_count, furn, direction} = contour;
+      const {cat: {clrs}, enm: {open_types, open_directions}, job_prm} = $p;
 
       // проверяем количество сторон фурнитуры
-      if(furn.open_type !== $p.enm.open_types.Глухое && furn.side_count && side_count !== furn.side_count) {
+      if(furn.open_type !== open_types.Глухое && furn.side_count && side_count !== furn.side_count) {
         // Визуализируем все стороны
-        const row_base = {clr: $p.cat.clrs.get(), nom: $p.job_prm.nom.furn_error};
+        const row_base = {clr: clrs.get(), nom: job_prm.nom.furn_error};
         contour.profiles.forEach(elm => {
           new_spec_row({elm, row_base, origin: furn, spec, ox});
         });
@@ -320,13 +257,13 @@ class ProductsBuilding {
         const next = contour.profile_by_furn_side(row.side === side_count ? 1 : row.side + 1, cache);
         const len = elm._row.len - prev.nom.sizefurn - next.nom.sizefurn;
 
-        const angle = direction == $p.enm.open_directions.Правое ?
-          elm.generatrix.angle_to(prev.generatrix, elm.e) :
-          prev.generatrix.angle_to(elm.generatrix, elm.b);
+        const angle = direction == open_directions.Правое ?
+          elm.generatrix.angle_between(prev.generatrix, elm.e) :
+          prev.generatrix.angle_between(elm.generatrix, elm.b);
 
         const {lmin, lmax, amin, amax} = row;
         if(len < lmin || len > lmax || angle < amin || (angle > amax && amax > 0) || (!elm.is_linear() && !row.arc_available)) {
-          new_spec_row({elm, row_base: {clr: $p.cat.clrs.get(), nom: $p.job_prm.nom.furn_error}, origin: furn, spec, ox});
+          new_spec_row({elm, row_base: {clr: clrs.get(), nom: job_prm.nom.furn_error}, origin: furn, spec, ox});
           ok = false;
         }
       });
@@ -341,14 +278,14 @@ class ProductsBuilding {
      */
     function cnn_spec_nearest(elm) {
       const nearest = elm.nearest();
-      if(nearest && nearest._row.clr != $p.cat.clrs.predefined('НеВключатьВСпецификацию') && elm._attr._nearest_cnn) {
+      if(nearest && nearest._row.clr != $p.cat.clrs.ignored() && elm._attr._nearest_cnn) {
         cnn_add_spec(elm._attr._nearest_cnn, elm, {
           angle: 0,
           alp1: 0,
           alp2: 0,
           len: elm._attr._len,
           origin: cnn_row(elm.elm, nearest.elm)
-        });
+        }, elm._attr._nearest_cnn, nearest);
       }
     }
 
@@ -358,9 +295,10 @@ class ProductsBuilding {
      */
     function base_spec_profile(elm) {
 
+      const {enm: {angle_calculating_ways, cnn_types}, cat, utils: {blank}} = $p;
       const {_row, rays} = elm;
 
-      if(_row.nom.empty() || _row.nom.is_service || _row.nom.is_procedure || _row.clr == $p.cat.clrs.predefined('НеВключатьВСпецификацию')) {
+      if(_row.nom.empty() || _row.nom.is_service || _row.nom.is_procedure || _row.clr == cat.clrs.ignored()) {
         return;
       }
 
@@ -388,7 +326,7 @@ class ProductsBuilding {
         row_spec.qty = row_cnn.quantity;
 
         // уточняем размер
-        const seam = $p.enm.angle_calculating_ways.СварнойШов;
+        const seam = angle_calculating_ways.СварнойШов;
         const d45 = Math.sin(Math.PI / 4);
         const dprev = row_cnn_prev ? (
           row_cnn_prev.angle_calc_method == seam && _row.alp1 > 0 ? row_cnn_prev.sz * d45 / Math.sin(_row.alp1 / 180 * Math.PI) : row_cnn_prev.sz
@@ -419,7 +357,7 @@ class ProductsBuilding {
             ox: ox,
             elm: elm,
             cnstr: 0,
-            inset: $p.utils.blank.guid,
+            inset: blank.guid,
             row_cnn: row_cnn_prev,
             row_spec: row_spec
           });
@@ -429,7 +367,7 @@ class ProductsBuilding {
             ox: ox,
             elm: elm,
             cnstr: 0,
-            inset: $p.utils.blank.guid,
+            inset: blank.guid,
             row_cnn: row_cnn_next,
             row_spec: row_spec
           });
@@ -438,23 +376,23 @@ class ProductsBuilding {
         // РассчитатьКоличествоПлощадьМассу
         const angle_calc_method_prev = row_cnn_prev ? row_cnn_prev.angle_calc_method : null;
         const angle_calc_method_next = row_cnn_next ? row_cnn_next.angle_calc_method : null;
-        const {СоединениеПополам: s2, Соединение: s1} = $p.enm.angle_calculating_ways;
+        const {СоединениеПополам: s2, Соединение: s1} = angle_calculating_ways;
         calc_count_area_mass(
           row_spec,
           spec,
           _row,
           angle_calc_method_prev,
           angle_calc_method_next,
-          angle_calc_method_prev == s2 || angle_calc_method_prev == s1 ? prev.generatrix.angle_to(elm.generatrix, b.point) : 0,
-          angle_calc_method_next == s2 || angle_calc_method_next == s1 ? elm.generatrix.angle_to(next.generatrix, e.point) : 0
+          angle_calc_method_prev == s2 || angle_calc_method_prev == s1 ? prev.generatrix.angle_between(elm.generatrix, b.point) : 0,
+          angle_calc_method_next == s2 || angle_calc_method_next == s1 ? elm.generatrix.angle_between(next.generatrix, e.point) : 0
         );
       }
 
       // добавляем спецификации соединений
       const len_angl = {
         angle: 0,
-        alp1: prev ? prev.generatrix.angle_to(elm.generatrix, elm.b, true) : 90,
-        alp2: next ? elm.generatrix.angle_to(next.generatrix, elm.e, true) : 90,
+        alp1: prev ? prev.generatrix.angle_between(elm.generatrix, elm.b) : 90,
+        alp2: next ? elm.generatrix.angle_between(next.generatrix, elm.e) : 90,
         len: row_spec ? row_spec.len * 1000 : _row.len,
         art1: false,
         art2: true,
@@ -466,14 +404,18 @@ class ProductsBuilding {
         len_angl.angle = len_angl.alp2;
 
         // для ТОбразного и Незамкнутого контура надо рассчитать еще и с другой стороны
-        if(b.cnn.cnn_type == $p.enm.cnn_types.t || b.cnn.cnn_type == $p.enm.cnn_types.i || b.cnn.cnn_type == $p.enm.cnn_types.xx) {
-          if(cnn_need_add_spec(e.cnn, next ? next.elm : 0, _row.elm, e.point)) {
-            cnn_add_spec(e.cnn, elm, len_angl, b.cnn);
+        if(b.cnn.cnn_type == cnn_types.t || b.cnn.cnn_type == cnn_types.i || b.cnn.cnn_type == cnn_types.xx) {
+          if(![cnn_types.t, cnn_types.xx].includes(e.cnn.cnn_type) || cnn_need_add_spec(e.cnn, next ? next.elm : 0, _row.elm, e.point)) {
+            cnn_add_spec(e.cnn, elm, len_angl, b.cnn, next);
           }
         }
-        // для угловых, добавляем из e.cnn строки с {art2: true}
         else {
-          cnn_add_spec(e.cnn, elm, len_angl, b.cnn);
+          // для угловых, добавляем из e.cnn строки с {art2: true}, а для внешних с {art2: false}
+          if(!e.profile_point || (next.rays[e.profile_point] && next.rays[e.profile_point].profile !== elm)) {
+            len_angl.art2 = false;
+            len_angl.art1 = true;
+          }
+          cnn_add_spec(e.cnn, elm, len_angl, b.cnn, next);
         }
 
         // спецификацию с предыдущей стороны рассчитваем всегда
@@ -481,7 +423,7 @@ class ProductsBuilding {
         len_angl.art2 = false;
         len_angl.art1 = true;
         len_angl.node = 'b';
-        cnn_add_spec(b.cnn, elm, len_angl, e.cnn);
+        cnn_add_spec(b.cnn, elm, len_angl, e.cnn, prev);
       }
 
       // спецификация вставки
@@ -500,7 +442,7 @@ class ProductsBuilding {
       ox.inserts.find_rows({cnstr: -elm.elm}, ({inset, clr}) => {
 
         // если во вставке указано создавать продукцию, создаём
-        if(inset.is_order_row == $p.enm.specification_order_row_types.Продукция) {
+        if(is_order_row_prod({inset, ox, elm})) {
           const cx = Object.assign(ox.find_create_cx(elm.elm, inset.ref), inset.contour_attrs(elm.layer));
           ox._order_rows.push(cx);
           spec = cx.specification.clear();
@@ -528,7 +470,7 @@ class ProductsBuilding {
 
       const {_row, _attr, inset, layer} = elm;
 
-      if(_row.nom.empty() || _row.nom.is_service || _row.nom.is_procedure || _row.clr == $p.cat.clrs.predefined('НеВключатьВСпецификацию')) {
+      if(_row.nom.empty() || _row.nom.is_service || _row.nom.is_procedure || _row.clr == $p.cat.clrs.ignored()) {
         return;
       }
 
@@ -542,7 +484,7 @@ class ProductsBuilding {
       ox.inserts.find_rows({cnstr: -elm.elm}, ({inset, clr}) => {
 
         // если во вставке указано создавать продукцию, создаём
-        if(inset.is_order_row == $p.enm.specification_order_row_types.Продукция) {
+        if(is_order_row_prod({inset, ox, elm})) {
           const cx = Object.assign(ox.find_create_cx(elm.elm, inset.ref), inset.contour_attrs(layer));
           ox._order_rows.push(cx);
           spec = cx.specification.clear();
@@ -577,7 +519,7 @@ class ProductsBuilding {
 
       const {profiles, imposts, _row} = elm;
 
-      if(_row.clr == $p.cat.clrs.predefined('НеВключатьВСпецификацию')) {
+      if(_row.clr == $p.cat.clrs.ignored()) {
         return;
       }
 
@@ -587,7 +529,7 @@ class ProductsBuilding {
       for (let i = 0; i < glength; i++) {
         const curr = profiles[i];
 
-        if(curr.profile && curr.profile._row.clr == $p.cat.clrs.predefined('НеВключатьВСпецификацию')) {
+        if(curr.profile && curr.profile._row.clr == $p.cat.clrs.ignored()) {
           return;
         }
 
@@ -595,16 +537,22 @@ class ProductsBuilding {
         const next = (i == glength - 1 ? profiles[0] : profiles[i + 1]).profile;
         const row_cnn = cnn_elmnts.find_rows({elm1: _row.elm, elm2: curr.profile.elm});
 
+        let angle_hor = (new paper.Point(curr.e.x - curr.b.x, curr.b.y - curr.e.y)).angle.round(2);
+        if(angle_hor < 0) {
+          angle_hor += 360;
+        }
+
         const len_angl = {
+          angle_hor,
           angle: 0,
-          alp1: prev.generatrix.angle_to(curr.profile.generatrix, curr.b, true),
-          alp2: curr.profile.generatrix.angle_to(next.generatrix, curr.e, true),
+          alp1: prev.generatrix.angle_between(curr.profile.generatrix, curr.b),
+          alp2: curr.profile.generatrix.angle_between(next.generatrix, curr.e),
           len: row_cnn.length ? row_cnn[0].aperture_len : 0,
           origin: cnn_row(_row.elm, curr.profile.elm)
         };
 
         // добавляем спецификацию соединения рёбер заполнения с профилем
-        (len_angl.len > 3) && cnn_add_spec(curr.cnn, curr.profile, len_angl);
+        (len_angl.len > 3) && cnn_add_spec(curr.cnn, curr.profile, len_angl, curr.cnn, elm);
 
       }
 
@@ -628,7 +576,7 @@ class ProductsBuilding {
           origin: inset,
           cnstr: -elm.elm
         };
-        if(inset.is_order_row == $p.enm.specification_order_row_types.Продукция) {
+        if(is_order_row_prod({inset, ox, elm})) {
           const cx = Object.assign(ox.find_create_cx(elm.elm, inset.ref), inset.contour_attrs(elm.layer));
           ox._order_rows.push(cx);
           spec = cx.specification.clear();
@@ -654,7 +602,7 @@ class ProductsBuilding {
       ox.inserts.find_rows({cnstr: contour.cnstr}, ({inset, clr}) => {
 
         // если во вставке указано создавать продукцию, создаём
-        if(inset.is_order_row == $p.enm.specification_order_row_types.Продукция) {
+        if(is_order_row_prod({inset, ox, contour})) {
           const cx = Object.assign(ox.find_create_cx(-contour.cnstr, inset.ref), inset.contour_attrs(contour));
           ox._order_rows.push(cx);
           spec = cx.specification.clear();
@@ -698,7 +646,8 @@ class ProductsBuilding {
       added_cnn_spec = {};
 
       // для всех контуров изделия
-      for (const contour of scheme.getItems({class: Contour})) {
+      const contours = scheme.getItems({class: Contour});
+      for (const contour of contours) {
 
         // для всех профилей контура
         for (const elm of contour.children) {
@@ -716,12 +665,14 @@ class ProductsBuilding {
           }
         }
 
-        // фурнитура контура
-        furn_spec(contour);
-
         // спецификация вставок в контур
         inset_contour_spec(contour);
 
+      }
+
+      // фурнитуру обсчитываем в отдельном цикле, т.к. могут потребоваться свойства соседних слоёв
+      for (const contour of contours) {
+        furn_spec(contour);
       }
 
       // для всех соединительных профилей
@@ -866,6 +817,33 @@ class ProductsBuilding {
 
     };
 
+    /**
+     * Выясняет, надо ли вытягивать данную вставку в продукцию
+     *
+     * @example
+     * // Пример формулы:
+     * let {elm, contour} = obj;
+     * if(!contour && elm) {
+     *  contour = elm.layer;
+     * }
+     * const {specification_order_row_types: types} = $p.enm;
+     * return contour ? types.Продукция : types.Нет;
+     *
+     * @param inset
+     * @param ox
+     * @param elm
+     * @param contour
+     * @return {boolean}
+     */
+    function is_order_row_prod({inset, ox, elm, contour}) {
+      const {enm: {specification_order_row_types}, CatFormulas} = $p;
+      let {is_order_row} = inset;
+      if(is_order_row instanceof CatFormulas) {
+        is_order_row = is_order_row.execute({ox, elm, contour});
+      }
+      return is_order_row === specification_order_row_types.Продукция;
+    }
+
   }
 
   /**
@@ -876,14 +854,14 @@ class ProductsBuilding {
    * @param [cnstr] {Number} - номер конструкции или элемента
    * @return {boolean}
    */
-  static check_params({params, row_spec, elm, cnstr, origin, ox}) {
+  static check_params({params, row_spec, elm, elm2, cnstr, origin, ox}) {
 
     let ok = true;
 
     // режем параметры по элементу
     params.find_rows({elm: row_spec.elm}, (prm_row) => {
       // выполнение условия рассчитывает объект CchProperties
-      ok = prm_row.param.check_condition({row_spec, prm_row, elm, cnstr, origin, ox});
+      ok = prm_row.param.check_condition({row_spec, prm_row, elm, elm2, cnstr, origin, ox});
       if(!ok) {
         return false;
       }
@@ -908,17 +886,17 @@ class ProductsBuilding {
       row_spec = spec.add();
     }
     row_spec.nom = nom || row_base.nom;
+
+    const {utils: {blank}, cat: {clrs, characteristics}, enm: {predefined_formulas: {cx_clr}}, cch: {properties}} = $p;
+
     if(!row_spec.nom.visualization.empty()) {
       row_spec.dop = -1;
     }
     else if(row_spec.nom.is_procedure) {
       row_spec.dop = -2;
     }
-    row_spec.characteristic = row_base.nom_characteristic;
-    if(!row_spec.characteristic.empty() && row_spec.characteristic.owner != row_spec.nom) {
-      row_spec.characteristic = $p.utils.blank.guid;
-    }
-    row_spec.clr = $p.cat.clrs.by_predefined(row_base ? row_base.clr : elm.clr, elm.clr, ox.clr, elm, spec);
+
+    row_spec.clr = clrs.by_predefined(row_base ? row_base.clr : elm.clr, elm.clr, ox.clr, elm, spec);
     row_spec.elm = elm.elm;
     if(origin) {
       row_spec.origin = origin;
@@ -926,6 +904,28 @@ class ProductsBuilding {
     if(specify) {
       row_spec.specify = specify;
     }
+
+    // если алгоритм = характеристика по цвету
+    if(row_base.algorithm === cx_clr) {
+      const {ref} = properties.predefined('clr_elm');
+      const clr = row_spec.clr.ref;
+      // перебираем все характеристики текущей номенклатуры
+      characteristics.find_rows({owner: row_spec.nom}, ({params}) => {
+        // если в параметрах характеристики цвет соответствует цвету элемента, помещаем характеристику в спецификацию
+        const prow = params._obj.find(({param, value}) => param === ref && value === clr);
+        if(prow) {
+          row_spec.characteristic = params._owner;
+          return false;
+        }
+      });
+    }
+    else {
+      row_spec.characteristic = row_base.nom_characteristic;
+      if(!row_spec.characteristic.empty() && row_spec.characteristic.owner != row_spec.nom) {
+        row_spec.characteristic = blank.guid;
+      }
+    }
+
     return row_spec;
   }
 

@@ -1,3 +1,4 @@
+
 /**
  * ### Раскладка
  * Класс описывает поведение элемента раскладки
@@ -154,8 +155,8 @@ class Onlay extends ProfileItem {
       return;
     }
 
-    const {_row, project, rays, generatrix} = this;
-    const {cnns} = project;
+    const {_row, rays, generatrix, ox} = this;
+    const cnns = ox.cnn_elmnts;
     const {b, e} = rays;
     const row_b = cnns.add({
       elm1: _row.elm,
@@ -265,6 +266,9 @@ class Onlay extends ProfileItem {
       const res_bind = this.bind_node(point);
       if(res_bind.binded){
         res._mixin(res_bind, ["point","profile","cnn_types","profile_point"]);
+        if(!this[res.node].is_nearest(res.point, 0)) {
+          this[res.node] = res.point;
+        }
       }
     }
     return res;

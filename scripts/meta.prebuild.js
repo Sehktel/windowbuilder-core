@@ -29,6 +29,7 @@ const config = require(settings_path)();
 // эти классы создадим руками
 const custom_constructor = [
   'CatFormulasParamsRow',
+  'CatCharacteristicsParamsRow',
   'DpBuyers_orderProduct_paramsRow',
   'CatProduction_paramsFurn_paramsRow',
   'CatProduction_paramsProduct_paramsRow',
@@ -60,6 +61,7 @@ const custom_constructor = [
   'CatOrganizationsExtra_fieldsRow',
   'CatDivisionsExtra_fieldsRow',
   'CatUsersExtra_fieldsRow',
+  'CatProduction_paramsExtra_fieldsRow',
 ];
 
 // конструктор metadata-core и плагин metadata-pouchdb

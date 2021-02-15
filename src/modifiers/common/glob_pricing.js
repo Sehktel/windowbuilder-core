@@ -1,3 +1,4 @@
+
 /**
  * ### Модуль Ценообразование
  * Аналог УПзП-шного __ЦенообразованиеСервер__
@@ -15,16 +16,13 @@
  */
 class Pricing {
 
-  constructor({md, adapters}) {
+  constructor({md, adapters, job_prm}) {
 
     // подписываемся на событие после загрузки из pouchdb-ram и готовности предопределенных
     md.once('predefined_elmnts_inited', () => {
       const {pouch} = adapters;
-      if(pouch.local.templates || pouch.props.user_node) {
+      if(pouch.props.user_node || job_prm.use_ram) {
         this.load_prices();
-      }
-      else {
-        pouch.once('on_log_in', () => this.load_prices());
       }
     });
 
@@ -39,10 +37,7 @@ class Pricing {
     }
 
     // сначала, пытаемся из local
-    return this.by_local()
-      .then((loc) => {
-        return !loc && this.by_range();
-      })
+    return this.by_range()
       .then(() => {
         const {doc: {calc_order}, wsql} = $p;
         // излучаем событие "можно открывать формы"
@@ -50,23 +45,27 @@ class Pricing {
 
         // следим за изменениями документа установки цен, чтобы при необходимости обновить кеш
         if(pouch.local.doc === pouch.remote.doc) {
-          pouch.local.doc.changes({
+          const class_names = [calc_order.class_name];
+          if(pouch.props.user_node) {
+            class_names.push('doc.nom_prices_setup');
+          }
+          this._changes = pouch.local.doc.changes({
             since: 'now',
             live: true,
             include_docs: true,
-            selector: {class_name: {$in: ['doc.nom_prices_setup', calc_order.class_name]}}
+            selector: {class_name: {$in: class_names}}
           }).on('change', (change) => {
             // формируем новый
-            if(change.doc.class_name == 'doc.nom_prices_setup'){
+            if(change.doc.class_name == 'doc.nom_prices_setup') {
               setTimeout(() => this.by_doc(change.doc), 500);
             }
-            else if(change.doc.class_name == calc_order.class_name){
+            else if(change.doc.class_name == calc_order.class_name) {
               if(pouch.props.user_node) {
-               return calc_order.emit('change', change.doc);
+                return calc_order.emit('change', change.doc);
               }
               const doc = calc_order.by_ref[change.id.substr(15)];
               const user = pouch.authorized || wsql.get_user_param('user_name');
-              if(!doc || user === change.doc.timestamp.user){
+              if(!doc || user === change.doc.timestamp.user) {
                 return;
               }
               pouch.load_changes({docs: [change.doc], update_only: true});
@@ -78,18 +77,15 @@ class Pricing {
 
   build_cache(rows) {
     const {nom, currencies} = $p.cat;
-    const note = 'Индекс цен номенклатуры';
+    //const note = 'Индекс цен номенклатуры';
     for(const {key, value} of rows){
-      if(!Array.isArray(value)){
-        return setTimeout(() => $p.iface.do_reload('', note), 1000);
-      }
       const onom = nom.get(key[0], false, true);
       if (!onom || !onom._data){
-        $p.record_log({
-          class: 'error',
-          note,
-          obj: {nom: key[0], value}
-        });
+ //       $p.record_log({
+ //         class: 'error',
+ //         note,
+ //         obj: {nom: key[0], value}
+ //       });
         continue;
       }
       if (!onom._data._price){
@@ -142,94 +138,6 @@ class Pricing {
   }
 
   /**
-   * если оффлайн и есть доступ к серверу, выполняет синхронизацию
-   * @param pouch
-   * @param step
-   * @return {Promise<T>}
-   */
-  sync_local(pouch, step = 0) {
-    const {utils} = $p;
-    return pouch.remote.templates.get(`_local/price_${step}`)
-      .then((remote) => {
-
-        if(pouch.remote.templates === pouch.local.templates) {
-          this.build_cache_local(remote);
-          return this.sync_local(pouch, ++step);
-        }
-
-        return pouch.local.templates.get(`_local/price_${step}`)
-          .catch(() => ({}))
-          .then((local) => {
-
-            // если версия local отличается от remote - обновляем
-            if(local.remote_rev !== remote._rev) {
-              remote.remote_rev = remote._rev;
-              if(!local._rev) {
-                delete remote._rev;
-              }
-              else {
-                remote._rev = local._rev;
-              }
-              pouch.local.templates.put(utils._clone(remote));
-            }
-
-            // грузим цены из remote
-            this.build_cache_local(remote);
-            return this.sync_local(pouch, ++step);
-          })
-      })
-      .catch((err) => {
-        if(step !== 0) {
-          if(pouch.remote.templates !== pouch.local.templates) {
-            pouch.local.templates.get(`_local/price_${step}`)
-              .then((local) => pouch.local.templates.remove(local))
-              .catch(() => null);
-          }
-          return true;
-        }
-      });
-  }
-
-  /**
-   * Получает цены из локальной базы или direct
-   */
-  by_local(step = 0) {
-    const {adapters: {pouch}, job_prm} = $p;
-
-    if(!pouch.local.templates) {
-      return Promise.resolve(false);
-    }
-
-    // если мы в idb, но подключены к серверу, тянем цены оттуда
-    const pre = step === 0 && (pouch.local.templates.adapter !== 'http' || (job_prm.user_node && job_prm.user_node.templates)) && pouch.authorized ?
-      pouch.remote.templates.info()
-        .then(() => this.sync_local(pouch))
-        .catch((err) => null)
-      :
-      Promise.resolve();
-
-    return pre.then((loaded) => {
-      if(loaded) {
-        return loaded;
-      }
-      else {
-        return pouch.local.templates.get(`_local/price_${step}`)
-      }
-    })
-      .then((prices) => {
-        if(prices === true) {
-          return prices;
-        }
-        this.build_cache_local(prices);
-        pouch.emit('nom_prices', ++step);
-        return this.by_local(step);
-      })
-      .catch((err) => {
-        return step !== 0;
-      });
-  }
-
-  /**
    * Перестраивает кеш цен номенклатуры по длинному ключу
    * @param startkey
    * @return {Promise.<TResult>|*}
@@ -237,17 +145,16 @@ class Pricing {
   by_range(startkey, step = 0) {
 
     const {pouch} = $p.adapters;
-    const {templates, doc} = pouch.local;
 
-    return (templates || doc).query('doc/doc_nom_prices_setup_slice_last',
-      {
-        limit: 600,
-        include_docs: false,
-        startkey: startkey || [''],
-        endkey: ['\ufff0'],
-        reduce: true,
-        group: true,
-      })
+    return pouch.local.doc.query('server_nom_prices/slice_last',
+        {
+          limit: 600,
+          include_docs: false,
+          startkey: startkey || [''],
+          endkey: ['\ufff0'],
+          reduce: true,
+          group: true,
+        })
       .then((res) => {
         this.build_cache(res.rows);
         pouch.emit('nom_prices', ++step);
@@ -266,15 +173,15 @@ class Pricing {
    * @return {Promise.<TResult>|*}
    */
   by_doc({goods}) {
-    const keys = goods.map(({nom, nom_characteristic, price_type}) => [nom, nom_characteristic, price_type]);
-    const {templates, doc} = $p.adapters.pouch.local;
-    return (templates || doc).query("doc/doc_nom_prices_setup_slice_last",
-      {
-        include_docs: false,
-        keys: keys,
-        reduce: true,
-        group: true,
-      })
+    const {adapters: {pouch}, utils: {blank}} = $p
+    const keys = goods.map(({nom, nom_characteristic, price_type}) => [nom, nom_characteristic || blank.guid, price_type]);
+    return pouch.local.doc.query('server_nom_prices/slice_last',
+        {
+          include_docs: false,
+          keys: keys,
+          reduce: true,
+          group: true,
+        })
       .then((res) => {
         this.build_cache(res.rows);
       });
@@ -300,7 +207,7 @@ class Pricing {
         price_prm = {
           price_type: price_type,
           characteristic: characteristic,
-          date: _owner.date,
+          date: new Date(), // _owner.date,
           currency: _owner.doc_currency
         };
 
@@ -506,7 +413,7 @@ class Pricing {
    * @param prm {Object}
    * @param prm.calc_order_row {TabularSectionRow.doc.calc_order.production}
    */
-  calc_amount (prm) {
+  calc_amount(prm) {
 
     const {calc_order_row, price_type, first_cost} = prm;
     const {marginality_in_spec, not_update} = $p.job_prm.pricing;
@@ -518,49 +425,70 @@ class Pricing {
     }
     else {
       const price_cost = marginality_in_spec && prm.spec.count() ?
-        prm.spec.aggregate([], ["amount_marged"]) :
+        prm.spec.aggregate([], ['amount_marged']) :
         this.nom_price(calc_order_row.nom, calc_order_row.characteristic, price_type.price_type_sale, prm, {});
 
       // цена продажи
-      if(price_cost){
+      if(price_cost) {
         calc_order_row.price = price_cost.round(rounding);
       }
       else if(marginality_in_spec && !first_cost) {
         calc_order_row.price = this.nom_price(calc_order_row.nom, calc_order_row.characteristic, price_type.price_type_sale, prm, {});
       }
-      else{
+      else {
         calc_order_row.price = (calc_order_row.first_cost * price_type.marginality).round(rounding);
       }
     }
 
     // КМарж в строке расчета
     calc_order_row.marginality = calc_order_row.first_cost ?
-      calc_order_row.price * ((100 - calc_order_row.discount_percent)/100) / calc_order_row.first_cost : 0;
+      calc_order_row.price * ((100 - calc_order_row.discount_percent) / 100) / calc_order_row.first_cost : 0;
 
 
     // Рассчитаем цену и сумму ВНУТР или ДИЛЕРСКУЮ цену и скидку
-    let extra_charge = $p.wsql.get_user_param("surcharge_internal", "number");
+    let extra_charge = $p.wsql.get_user_param('surcharge_internal', 'number');
     // если пересчет выполняется менеджером, используем наценку по умолчанию
-    if(!$p.current_user.partners_uids.length || !extra_charge){
+    if(!$p.current_user.partners_uids.length || !extra_charge) {
       extra_charge = price_type.extra_charge_external || 0;
     }
 
     // TODO: учесть формулу
-    calc_order_row.price_internal = (calc_order_row.price * (100 - calc_order_row.discount_percent)/100 * (100 + extra_charge)/100).round(rounding);
+    calc_order_row.price_internal = (calc_order_row.price * (100 - calc_order_row.discount_percent) / 100 * (100 + extra_charge) / 100).round(rounding);
 
     // Эмулируем событие окончания редактирования, чтобы единообразно пересчитать строку табчасти
-    !prm.hand_start && calc_order_row.value_change("price", {}, calc_order_row.price, true);
+    !prm.hand_start && calc_order_row.value_change('price', {}, calc_order_row.price, true);
 
     // Цены и суммы вытянутых строк спецификации в заказ
     prm.order_rows && prm.order_rows.forEach((value) => {
       const fake_prm = {
         spec: value.characteristic.specification,
         calc_order_row: value
-      }
+      };
       this.price_type(fake_prm);
       this.calc_amount(fake_prm);
     });
 
+  }
+
+  /**
+   * В случае нулевых цен, дополняет в спецификацию строку ошибки
+   * @param prm
+   */
+  check_prices({calc_order_row}) {
+    const {pricing: {marginality_in_spec}, nom: {empty_price}} = $p.job_prm;
+    let err;
+
+    calc_order_row.characteristic.specification.forEach((row) => {
+      const {_obj, nom, characteristic} = row;
+      if(_obj.totqty1 && !nom.is_procedure && !nom.is_service) {
+        // проверяем цену продужи или себестоимости
+        if((marginality_in_spec && !_obj.amount_marged) || (!marginality_in_spec && !_obj.price)){
+          err = row;
+          return false;
+        }
+      }
+    });
+    return err;
   }
 
   /**

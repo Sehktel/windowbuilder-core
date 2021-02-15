@@ -1,4 +1,5 @@
-﻿/**
+﻿
+/**
  * Расширения объектов paper.js
  *
  * &copy; http://www.oknosoft.ru 2014-2018
@@ -99,6 +100,19 @@ Object.defineProperties(paper.Path.prototype, {
     },
 
   /**
+   * Угол между путями в точке _point_
+   */
+  angle_between: {
+    value : function angle_between(other, point, interior, round){
+      let res = 180 - this.angle_to(other, point, interior, round);
+      if(res < 0){
+        res += 360;
+      }
+      return res;
+    }
+  },
+
+  /**
      * Выясняет, является ли путь прямым
      * @return {Boolean}
      */
@@ -115,9 +129,9 @@ Object.defineProperties(paper.Path.prototype, {
       }
       else {
         // если у всех кривых пути одинаковые направленные углы - путь прямой
-        const da = firstCurve.point1.getDirectedAngle(firstCurve.point2);
+        const da = firstCurve.point2.subtract(firstCurve.point1).angle;
         for (let i = 1; i < curves.length; i++) {
-          const dc = curves[i].point1.getDirectedAngle(curves[i].point2);
+          const dc = curves[i].point2.subtract(curves[i].point1).angle;
           if(Math.abs(dc - da) > consts.epsilon) {
             return false;
           }
@@ -149,7 +163,7 @@ Object.defineProperties(paper.Path.prototype, {
       value: function get_subpath(point1, point2) {
         let tmp;
 
-        if(!this.length || (point1.is_nearest(this.firstSegment.point) && point2.is_nearest(this.lastSegment.point))){
+        if(!this.length || !point1 || !point2 || (point1.is_nearest(this.firstSegment.point) && point2.is_nearest(this.lastSegment.point))){
           tmp = this.clone(false);
         }
         else if(point2.is_nearest(this.firstSegment.point) && point1.is_nearest(this.lastSegment.point)){
@@ -212,23 +226,24 @@ Object.defineProperties(paper.Path.prototype, {
   equidistant: {
       value: function equidistant(delta, elong) {
 
+        const {firstSegment, lastSegment} = this;
         let normal = this.getNormalAt(0);
         const res = new paper.Path({
-            segments: [this.firstSegment.point.add(normal.multiply(delta))],
+            segments: [firstSegment.point.add(normal.multiply(delta))],
             insert: false
           });
 
         if(this.is_linear()) {
           // добавляем последнюю точку
-          res.add(this.lastSegment.point.add(normal.multiply(delta)));
+          res.add(lastSegment.point.add(normal.multiply(delta)));
         }
         else{
 
-          if(this.firstSegment.handleIn.length){
-            res.firstSegment.handleIn = this.firstSegment.handleIn.clone();
+          if(firstSegment.handleIn.length){
+            res.firstSegment.handleIn = firstSegment.handleIn.clone();
           }
-          if(this.firstSegment.handleOut.length){
-            res.firstSegment.handleOut = this.firstSegment.handleOut.clone();
+          if(firstSegment.handleOut.length){
+            res.firstSegment.handleOut = firstSegment.handleOut.clone();
           }
 
           // для кривого бежим по точкам
@@ -244,13 +259,13 @@ Object.defineProperties(paper.Path.prototype, {
 
           // добавляем последнюю точку
           normal = this.getNormalAt(len);
-          res.add(this.lastSegment.point.add(normal.multiply(delta)));
+          res.add(lastSegment.point.add(normal.multiply(delta)));
 
-          if(this.lastSegment.handleIn.length){
-            res.lastSegment.handleIn = this.lastSegment.handleIn.clone();
+          if(lastSegment.handleIn.length){
+            res.lastSegment.handleIn = lastSegment.handleIn.clone();
           }
-          if(this.lastSegment.handleOut.length){
-            res.lastSegment.handleOut = this.lastSegment.handleOut.clone();
+          if(lastSegment.handleOut.length){
+            res.lastSegment.handleOut = lastSegment.handleOut.clone();
           }
 
           res.simplify(0.8);
@@ -376,6 +391,9 @@ Object.defineProperties(paper.Path.prototype, {
    */
   point_pos: {
     value: function point_pos(point, interior) {
+      if(!point) {
+        return 0;
+      }
       const np = this.getNearestPoint(interior);
       const offset = this.getOffsetOf(np);
       const line = new paper.Line(np, np.add(this.getTangentAt(offset)));
@@ -594,10 +612,10 @@ Object.defineProperties(paper.Point.prototype, {
 	 * Сдвигает точку к ближайшему лучу с углом, кратным snapAngle
 	 *
 	 * @param [snapAngle] {Number} - шаг угла, по умолчанию 45°
-	 * @return {paper.Point}
+	 * @return {Point}
 	 */
 	snap_to_angle: {
-		value: function snap_to_angle(snapAngle) {
+		value: function snap_to_angle(snapAngle, shift) {
 
 			if(!snapAngle){
         snapAngle = Math.PI*2/8;
@@ -610,7 +628,9 @@ Object.defineProperties(paper.Point.prototype, {
 				diry = Math.sin(angle),
 				d = dirx*this.x + diry*this.y;
 
-			return new paper.Point((dirx*d / 10).round() * 10, (diry*d / 10).round() * 10);
+			return shift || paper.Key.isDown('shift') ?
+        new paper.Point(dirx*d, diry*d) :
+        new paper.Point((dirx*d / 10).round() * 10, (diry*d / 10).round() * 10);
 		}
 	},
 

@@ -1,3 +1,4 @@
+
 /**
  * ### Соединительный профиль
  * Класс описывает поведение соединительного профиля
@@ -16,11 +17,6 @@
  * @extends ProfileItem
  */
 class ProfileConnective extends ProfileItem {
-
-  constructor(attr) {
-    super(attr);
-    this.parent = this.project.l_connective;
-  }
 
   /**
    * Расстояние от узла до опорной линии, для соединителей и раскладок == 0
@@ -102,6 +98,15 @@ class ProfileConnective extends ProfileItem {
 
     return res;
 
+  }
+
+  /**
+   * К соединителям ипосты не крепятся
+   */
+  joined_imposts(check_only) {
+    const tinner = [];
+    const touter = [];
+    return check_only ? false : {inner: tinner, outer: touter};
   }
 
   /**
@@ -198,6 +203,10 @@ class ProfileConnective extends ProfileItem {
  */
 class ConnectiveLayer extends paper.Layer {
 
+  get skeleton() {
+    return this.project._skeleton;
+  }
+
   redraw() {
     this.children.forEach((elm) => elm.redraw());
   }
@@ -211,13 +220,19 @@ class ConnectiveLayer extends paper.Layer {
   }
 
   /**
-   * Возвращает массив профилей текущего контура
+   * Возвращает массив профилей текущего слоя
    * @property profiles
-   * @for Contour
-   * @returns {Array.<Profile>}
+   * @returns {Array.<ProfileItem>}
    */
   get profiles() {
-    return this.children.filter((elm) => elm instanceof Profile);
+    return this.children.filter((elm) => elm instanceof ProfileItem);
+  }
+
+  /**
+   * Обработчик при изменении системы
+   */
+  on_sys_changed() {
+    this.profiles.forEach((elm) => elm.default_inset(true));
   }
 
   /**

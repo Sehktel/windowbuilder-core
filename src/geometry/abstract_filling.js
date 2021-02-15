@@ -1,3 +1,4 @@
+
 /**
  * ### Абстрактное заполнение
  * Общие свойства заполнения и контура
@@ -115,6 +116,10 @@ const AbstractFilling = (superclass) => class extends superclass {
    */
   get contours() {
     return this.children.filter((elm) => elm instanceof Contour);
+  }
+
+  get skeleton() {
+    return this._skeleton;
   }
 
   /**

@@ -1,3 +1,4 @@
+
 /**
  * ### Заполнение
  * - Инкапсулирует поведение элемента заполнения
@@ -34,6 +35,9 @@ class Filling extends AbstractFilling(BuilderElement) {
 
   initialize(attr) {
 
+    // узлы и рёбра раскладок заполнения
+    //this._skeleton = new Skeleton(this);
+
     const _row = attr.row;
     const {_attr, project} = this;
     const h = project.bounds.height + project.bounds.y;
@@ -60,8 +64,10 @@ class Filling extends AbstractFilling(BuilderElement) {
     _attr.path.strokeWidth = 0;
 
     // для нового устанавливаем вставку по умолчанию
+    const {elm_types} = $p.enm;
+    const gl_types = [elm_types.Стекло, elm_types.Заполнение];
     if(_row.inset.empty()){
-      _row.inset = project.default_inset({elm_type: [$p.enm.elm_types.Стекло, $p.enm.elm_types.Заполнение]});
+      _row.inset = project.default_inset({elm_type: gl_types});
     }
 
     // для нового устанавливаем цвет по умолчанию
@@ -72,7 +78,7 @@ class Filling extends AbstractFilling(BuilderElement) {
       });
     }
     if(_row.clr.empty()){
-      project._dp.sys.elmnts.find_rows({elm_type: {in: [$p.enm.elm_types.Стекло, $p.enm.elm_types.Заполнение]}}, (row) => {
+      project._dp.sys.elmnts.find_rows({elm_type: {in: gl_types}}, (row) => {
         _row.clr = row.clr;
         return false;
       });
@@ -80,7 +86,7 @@ class Filling extends AbstractFilling(BuilderElement) {
     this.clr = _row.clr;
 
     if(_row.elm_type.empty()){
-      _row.elm_type = $p.enm.elm_types.Стекло;
+      _row.elm_type = elm_types.Стекло;
     }
 
     _attr.path.visible = false;
@@ -88,26 +94,28 @@ class Filling extends AbstractFilling(BuilderElement) {
     this.addChild(_attr.path);
 
     // раскладки текущего заполнения
-    project.ox.coordinates.find_rows({
+    _row._owner.find_rows({
       cnstr: this.layer.cnstr,
       parent: this.elm,
-      elm_type: $p.enm.elm_types.Раскладка
+      elm_type: elm_types.Раскладка
     }, (row) => new Onlay({row, parent: this}));
 
     // спецификация стеклопакета прототипа
     if (attr.proto) {
+      const {glass_specification} = this.ox;
       const tmp = [];
-      project.ox.glass_specification.find_rows({elm: attr.proto.elm}, (row) => {
-        tmp.push({
-          clr: row.clr,
-          elm: this.elm,
-          gno: row.gno,
-          inset: row.inset
-        });
+      glass_specification.find_rows({elm: attr.proto.elm}, (row) => {
+        tmp.push({clr: row.clr, elm: this.elm, inset: row.inset});
       });
-      tmp.forEach((row) => project.ox.glass_specification.add(row));
+      tmp.forEach((row) => glass_specification.add(row));
     }
 
+  }
+
+  get elm_type() {
+    const {elm_types} = $p.enm;
+    const {nom} = this;
+    return nom.elm_type == elm_types.Заполнение ? nom.elm_type : elm_types.Стекло;
   }
 
   /**
@@ -117,13 +125,12 @@ class Filling extends AbstractFilling(BuilderElement) {
    */
   save_coordinates() {
 
-    const {_row, project, profiles, bounds, imposts, nom} = this;
+    const {_row, project, profiles, bounds, imposts, nom, ox: {cnn_elmnts: cnns, glasses}} = this;
     const h = project.bounds.height + project.bounds.y;
-    const {cnns} = project;
     const {length} = profiles;
 
     // строка в таблице заполнений продукции
-    project.ox.glasses.add({
+    glasses.add({
       elm: _row.elm,
       nom: nom,
       formula: this.formula(),
@@ -143,6 +150,7 @@ class Filling extends AbstractFilling(BuilderElement) {
     _row.x2 = (bounds.topRight.x - project.bounds.x).round(3);
     _row.y2 = (h - bounds.topRight.y).round(3);
     _row.path_data = this.path.pathData;
+    _row.s = this.area;
 
     // получаем пути граней профиля
     for(let i=0; i<length; i++ ){
@@ -199,7 +207,7 @@ class Filling extends AbstractFilling(BuilderElement) {
     }
 
     // дочерние раскладки
-    imposts.forEach((curr) => curr.save_coordinates());
+    imposts.forEach((onlay) => onlay.save_coordinates());
   }
 
   /**
@@ -207,33 +215,49 @@ class Filling extends AbstractFilling(BuilderElement) {
    */
   create_leaf(furn, direction) {
 
-    const {project, _row} = this;
+    const {project, _row, ox, elm: elm1} = this;
 
     // прибиваем соединения текущего заполнения
-    project.cnns.clear({elm1: this.elm});
+    ox.cnn_elmnts.clear({elm1});
 
     // создаём пустой новый слой
-    const Constructor = furn === 'virtual' ? ContourVirtual : (furn === 'nested' ? ContourNested : Contour);
-    const contour = new Constructor({parent: this.parent});
+    let kind = 0;
+    if(typeof furn === 'string') {
+      if(furn.includes('nested')) {
+        kind = 2;
+      }
+      else if(furn.includes('virtual')) {
+        kind = 1;
+      }
+    }
+    const cattr = {project, kind, parent: this.parent};
+    // фурнитура и параметры по умолчанию
+    if(direction) {
+      cattr.direction = direction;
+    }
+    const {utils} = $p;
+    if(kind === 0) {
+      if((utils.is_data_obj(furn) && !furn.empty()) || (utils.is_guid(furn) && furn !== utils.blank.guid)) {
+        cattr.furn = furn;
+      }
+      else {
+        cattr.furn = project.default_furn;
+      }
+    }
+    const contour = Contour.create(cattr);
 
     // задаём его путь - внутри будут созданы профили
     contour.path = this.profiles;
 
     // помещаем себя вовнутрь нового слоя
-    if(furn === 'nested') {
+    if(kind === 2) {
       this.remove();
     }
     else {
       this.parent = contour;
       _row.cnstr = contour.cnstr;
-    }
-
-    // фурнитура и параметры по умолчанию
-    if(direction) {
-      contour.direction = direction;
-    }
-    if(typeof furn !== 'string') {
-      contour.furn = furn || project.default_furn;
+      // дочерние раскладки
+      this.imposts.forEach(({_row}) => _row.cnstr = contour.cnstr);
     }
 
     // оповещаем мир о новых слоях
@@ -348,15 +372,17 @@ class Filling extends AbstractFilling(BuilderElement) {
       _attr._text.fitBounds(textBounds);
       // Поиск самой длинной кривой пути
       const maxCurve = path.curves.reduce((curv, item) => item.length > curv.length ? item : curv, path.curves[0]);
-      const {angle, angleInRadians} = maxCurve.line.vector;
-      const {PI} = Math;
-      _attr._text.rotation = angle;
-      const biasPoint = new paper.Point(Math.cos(angleInRadians + PI / 4), Math.sin(angleInRadians + PI / 4)).multiply(3 * elm_font_size);
-      _attr._text.point = maxCurve.point1.add(biasPoint);
-      // Перевернуть с головы на ноги
-      if(Math.abs(angle) >= 85 && Math.abs(angle) <= 185){
-        _attr._text.point = _attr._text.bounds.rightCenter;
-        _attr._text.rotation += 180;
+      if(maxCurve) {
+        const {angle, angleInRadians} = maxCurve.line.vector;
+        const {PI} = Math;
+        _attr._text.rotation = angle;
+        const biasPoint = new paper.Point(Math.cos(angleInRadians + PI / 4), Math.sin(angleInRadians + PI / 4)).multiply(3 * elm_font_size);
+        _attr._text.point = maxCurve.point1.add(biasPoint);
+        // Перевернуть с головы на ноги
+        if(Math.abs(angle) >= 85 && Math.abs(angle) <= 185){
+          _attr._text.point = _attr._text.bounds.rightCenter;
+          _attr._text.rotation += 180;
+        }
       }
     }
   }
@@ -364,8 +390,8 @@ class Filling extends AbstractFilling(BuilderElement) {
   /**
    * ### Рисует заполнение отдельным элементом
    */
-  draw_fragment() {
-    const {l_dimensions, layer, path} = this;
+  draw_fragment(no_zoom) {
+    const {l_dimensions, layer, path, imposts} = this;
     this.visible = true;
     path.set({
       strokeColor: 'black',
@@ -373,6 +399,7 @@ class Filling extends AbstractFilling(BuilderElement) {
       strokeScaling: false,
       opacity: 0.6,
     });
+    imposts.forEach((elm) => elm.redraw());
     l_dimensions.redraw(true);
     layer.draw_visualization();
     const {l_visualization: lv} = layer;
@@ -380,7 +407,22 @@ class Filling extends AbstractFilling(BuilderElement) {
     lv._cnn && lv._cnn.removeChildren();
     lv._opening && lv._opening.removeChildren();
     lv.visible = true;
-    layer.zoom_fit();
+    !no_zoom && layer.zoom_fit();
+  }
+
+  reset_fragment() {
+    const {_attr, layer, path} = this;
+    if(_attr._dimlns) {
+      _attr._dimlns.remove();
+      delete _attr._dimlns;
+    }
+    path.set({
+      strokeColor: null,
+      strokeWidth: 0,
+      strokeScaling: true,
+      opacity: 1,
+    });
+    this.visible = !layer.hidden;
   }
 
   /**
@@ -393,8 +435,7 @@ class Filling extends AbstractFilling(BuilderElement) {
     const inset = $p.cat.inserts.get(v);
 
     if(!ignore_select){
-      const {project, elm} = this;
-      const {glass_specification} = project.ox;
+      const {project, elm, ox: {glass_specification}} = this;
 
       // проверим доступность цветов, при необходимости обновим
       inset.clr_group.default_clr(this);
@@ -457,8 +498,9 @@ class Filling extends AbstractFilling(BuilderElement) {
    * @type String
    */
   formula(by_art) {
+    const {elm, inset, ox} = this;
     let res;
-    this.project.ox.glass_specification.find_rows({elm: this.elm, inset: {not: $p.utils.blank.guid}}, ({inset}) => {
+    ox.glass_specification.find_rows({elm, inset: {not: $p.utils.blank.guid}}, ({inset}) => {
       let {name, article} = inset;
       const aname = name.split(' ');
       if(by_art && article){
@@ -474,7 +516,7 @@ class Filling extends AbstractFilling(BuilderElement) {
         res += (by_art ? '*' : 'x') + name;
       }
     });
-    return res || (by_art ? this.inset.article || this.inset.name : this.inset.name);
+    return res || (by_art ? inset.article || inset.name : inset.name);
   }
 
   /**
@@ -831,22 +873,26 @@ class Filling extends AbstractFilling(BuilderElement) {
    */
   get oxml() {
     const oxml = {
-      " ": [
-        {id: "info", path: "o.info", type: "ro"},
-        "inset",
-        "clr"
+      ' ': [
+        {id: 'info', path: 'o.info', type: 'ro'},
+        'inset',
+        'clr'
       ],
-      "Начало": [
-        {id: "x1", path: "o.x1", synonym: "X1", type: "ro"},
-        {id: "y1", path: "o.y1", synonym: "Y1", type: "ro"}
+      Начало: [
+        {id: 'x1', path: 'o.x1', synonym: 'X1', type: 'ro'},
+        {id: 'y1', path: 'o.y1', synonym: 'Y1', type: 'ro'}
       ],
-      "Конец": [
-        {id: "x2", path: "o.x2", synonym: "X2", type: "ro"},
-        {id: "y2", path: "o.y2", synonym: "Y2", type: "ro"}
+      Конец: [
+        {id: 'x2', path: 'o.x2', synonym: 'X2', type: 'ro'},
+        {id: 'y2', path: 'o.y2', synonym: 'Y2', type: 'ro'}
       ]
     };
-    if(this.selected_cnn_ii()){
-      oxml["Примыкание"] = ["cnn3"];
+    if(this.selected_cnn_ii()) {
+      oxml.Примыкание = ['cnn3'];
+    }
+    const props = this.elm_props();
+    if(props.length) {
+      oxml.Свойства = props.map(({ref}) => ref);
     }
     return oxml;
   }
@@ -862,7 +908,7 @@ class Filling extends AbstractFilling(BuilderElement) {
 
   // переопределяем геттер вставки
   get inset() {
-    const {_attr, _row} = this;
+    const {_attr, _row, ox} = this;
     if(!_attr._ins_proxy || _attr._ins_proxy.ref != _row.inset){
       _attr._ins_proxy = new Proxy(_row.inset, {
         get: (target, prop) => {
@@ -872,7 +918,7 @@ class Filling extends AbstractFilling(BuilderElement) {
 
             case 'thickness':
               let res = 0;
-              this.project.ox.glass_specification.find_rows({elm: this.elm}, (row) => {
+              ox.glass_specification.find_rows({elm: this.elm}, (row) => {
                 res += row.inset.thickness;
               });
               return res || _row.inset.thickness;

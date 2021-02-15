@@ -1,3 +1,4 @@
+
 /**
  * ### Виртуальный слой
  * https://github.com/oknosoft/windowbuilder/issues/563
@@ -12,9 +13,6 @@ class ContourVirtual extends Contour {
 
   constructor(attr) {
     super(attr);
-    if(!this._row.kind) {
-      this._row.kind = 1;
-    }
   }
 
   save_coordinates(short) {
@@ -26,7 +24,7 @@ class ContourVirtual extends Contour {
         if (elm === l_text || elm === l_dimensions) {
           elm.children.forEach((elm) => elm.save_coordinates && elm.save_coordinates());
         }
-        else if (elm.save_coordinates && !(elm instanceof ProfileVirtual)) {
+        else if (elm.save_coordinates && !(elm instanceof ProfileNested)) {
           elm.save_coordinates();
         }
       }
